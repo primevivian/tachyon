@@ -1,0 +1,87 @@
+# ---------------------------------------------------------------
+# KiCad
+# ---------------------------------------------------------------
+# Local history (KiCad 9+) and automatic backups
+.history/
+*-backups/
+*.bak
+*.bck
+*.kicad_pcb-bak
+*.kicad_sch-bak
+*-bak
+*~
+
+# Lock files created while a project/sheet is open
+~*.lck
+*.lck
+
+# Autosave files
+_autosave-*
+\#auto_saved_files\#
+
+# Per-user local project settings (layer visibility, open files, etc.)
+*.kicad_prl
+
+# Caches and generated files
+fp-info-cache
+*-cache.lib
+*.kicad_sym-cache
+*-rescue.lib
+*-rescue.kicad_sym
+*-rescue.dcm
+
+# Fabrication output (publish via releases or a dedicated folder instead)
+gerbers/
+fab/
+production/
+*.gbr
+*.drl
+*.gbrjob
+*.pos
+*-drc.rpt
+*-erc.rpt
+
+# ---------------------------------------------------------------
+# Firmware build artifacts
+# ---------------------------------------------------------------
+*.o
+*.obj
+*.d
+*.elf
+*.map
+*.lst
+*.lss
+*.sym
+*.eep
+*.a
+build/
+.pio/
+
+# ---------------------------------------------------------------
+# Python (tools/)
+# ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------
+# Editors / IDEs
+# ---------------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# ---------------------------------------------------------------
+# OS
+# ---------------------------------------------------------------
+.DS_Store
+._*
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
