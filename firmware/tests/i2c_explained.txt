@@ -1,0 +1,426 @@
+======================================================================
+ TACHYON - HOW THE I2C CODE IN test_mpu6050.c WORKS
+======================================================================
+
+Contents
+  1. What I2C is
+  2. The wires and the pull-ups
+  3. Addresses, and why the code writes "MPU_ADDR << 1"
+  4. The ATmega328P's I2C hardware (the "TWI")
+  5. The four I2C functions, line by line
+  6. Writing a register: mpu_write()
+  7. Reading the gyro: gyro_read(), step by step
+  8. Status codes
+  9. The "is the module there?" check
+ 10. Timing
+ 11. What the code does NOT protect against
+ 12. Reusing it: reading more registers
+
+
+----------------------------------------------------------------------
+1. WHAT I2C IS
+----------------------------------------------------------------------
+
+I2C ("I-squared-C") is a way for chips to talk over two wires:
+
+  SDA  = data   (the bits themselves)
+  SCL  = clock  (a pulse that says "read the data bit now")
+
+One chip is the CONTROLLER (here: the ATmega328P). It starts every
+conversation and drives the clock. The others are TARGETS (here: the
+MPU6050). They only answer when spoken to. Many targets can share the
+same two wires because each one has its own address.
+
+Everything is sent in BYTES (8 bits). After each byte, whoever
+received it sends back one more bit:
+
+  ACK  (acknowledge)     = "got it" / "send me more"
+  NACK (not acknowledge) = "nobody here" / "that's enough"
+
+So every byte takes 9 clock pulses: 8 data bits + 1 ACK/NACK bit.
+
+A conversation always looks like this:
+
+  START  ->  address byte  ->  data bytes ...  ->  STOP
+
+  START = SDA goes low while SCL is high ("attention, everyone")
+  STOP  = SDA goes high while SCL is high ("conversation over")
+
+These two patterns never happen in the middle of normal data, so
+every chip on the bus can always tell when a conversation begins and
+ends.
+
+
+----------------------------------------------------------------------
+2. THE WIRES AND THE PULL-UPS
+----------------------------------------------------------------------
+
+Chips on an I2C bus never drive a wire HIGH. They can only pull it
+LOW, or let go of it. A resistor (the "pull-up") brings the wire back
+up to HIGH when nobody is pulling it down:
+
+            3.3 V
+              |
+             [R]  pull-up resistor (already on the GY-521 board)
+              |
+   Uno A4 ----+---------- MPU6050 SDA      (same idea for SCL / A5)
+
+Why: if two chips tried to talk at once, one driving HIGH and the
+other LOW would be a short circuit. With "pull low or let go", the
+worst case is just a garbled bit.
+
+The GY-521 pulls up to 3.3 V. The code also turns on the ATmega's
+own weak internal pull-ups (about 35 kOhm, to 5 V):
+
+    PORTC |= (1 << PC4) | (1 << PC5);
+
+On an input pin, setting the PORT bit switches the internal pull-up
+on. This matters if the module is unplugged: without any pull-up the
+wires would float, and the I2C hardware would wait forever for the
+clock line to go high. With them, a missing module gives a clean
+"nobody answered" instead (see section 9).
+
+Keep SDA/SCL wires short. 3.3 V is just under what the ATmega
+officially needs to read a HIGH (3.5 V); the internal pull-ups help a
+little, but long wires near the motors can still cause errors.
+
+
+----------------------------------------------------------------------
+3. ADDRESSES, AND WHY THE CODE WRITES "MPU_ADDR << 1"
+----------------------------------------------------------------------
+
+The MPU6050's address is 0x68 (0x69 if its AD0 pin is tied high).
+I2C addresses are 7 bits long. The address byte on the wire is those
+7 bits followed by ONE direction bit:
+
+    bit:   7  6  5  4  3  2  1 | 0
+          [   7-bit address    ] [R/W]    0 = write, 1 = read
+
+    0x68          =   110 1000
+    0x68 << 1     =  1101 0000  = 0xD0   -> "MPU6050, I will WRITE"
+    (0x68<<1) | 1 =  1101 0001  = 0xD1   -> "MPU6050, I will READ"
+
+That is all "MPU_ADDR << 1" and "(MPU_ADDR << 1) | 1" mean: shift
+the address one place left to make room for the direction bit.
+
+
+----------------------------------------------------------------------
+4. THE ATmega328P'S I2C HARDWARE (THE "TWI")
+----------------------------------------------------------------------
+
+Atmel calls I2C "TWI" (Two-Wire Interface) - same thing, different
+name (I2C was a trademark). The chip has a hardware block that does
+the bit-by-bit work by itself. The program only tells it what to do
+next, one step at a time, through four registers:
+
+  TWBR  Bit Rate     - sets the clock speed
+  TWDR  Data         - the byte to send, or the byte just received
+  TWSR  Status       - a code saying what just happened
+  TWCR  Control      - "do this next" + "are you done yet?"
+
+Clock speed (TWBR):
+
+    SCL frequency = F_CPU / (16 + 2 * TWBR)
+
+    The code works TWBR out from the I2C_HZ setting:
+        TWBR = (F_CPU / I2C_HZ - 16) / 2
+             = (16 000 000 / 100 000 - 16) / 2 = 72
+    Check: 16 000 000 / (16 + 144) = 100 000 Hz = 100 kHz
+
+Control bits in TWCR used by the code:
+
+  TWEN   Enable  - turns the I2C hardware on (and takes over A4/A5).
+                   Always set.
+  TWINT  Interrupt flag - the key bit, see below.
+  TWSTA  Start   - "send a START"
+  TWSTO  Stop    - "send a STOP"
+  TWEA   Enable Acknowledge - when RECEIVING a byte, answer ACK
+                   ("send more"). Without it the hardware answers
+                   NACK ("that was the last one").
+
+How TWINT works (this is the whole trick):
+
+  * The hardware SETS TWINT to 1 when it has finished a step.
+    While TWINT is 1, the bus is paused, waiting for the program.
+  * The program writes a 1 to TWINT to CLEAR it. That starts the
+    next step. (Yes: writing 1 clears it. That is how this flag
+    works on AVR.)
+
+So every step is:
+    1. Put the data in TWDR (if sending a byte)
+    2. Write TWCR = what-to-do | TWINT | TWEN    -> step starts
+    3. Wait until TWINT reads 1 again            -> step finished
+    4. Read TWSR to see how it went
+
+
+----------------------------------------------------------------------
+5. THE FOUR I2C FUNCTIONS, LINE BY LINE
+----------------------------------------------------------------------
+
+--- twi(flags) : do one step and wait for it ----------------------
+
+    static uint8_t twi(uint8_t flags)
+    {
+        TWCR = flags | (1 << TWINT) | (1 << TWEN);
+        while (!(TWCR & (1 << TWINT)));
+        return TWSR & 0xF8;
+    }
+
+  Line 1: start the step. "flags" says which step:
+            twi(1 << TWSTA)  -> send a START
+            twi(0)           -> send TWDR, or receive a byte + NACK
+            twi(1 << TWEA)   -> receive a byte + ACK
+  Line 2: wait until the hardware sets TWINT (step finished).
+  Line 3: return the status code. "& 0xF8" keeps the top 5 bits; the
+          bottom 3 bits of TWSR are unrelated (clock prescaler).
+
+  Note: every call rewrites ALL of TWCR. So twi(0) right after a
+  START also switches TWSTA back off - which is required, otherwise
+  the hardware would keep sending STARTs.
+
+--- twi_send(byte) : send one byte --------------------------------
+
+    static uint8_t twi_send(uint8_t byte)
+    {
+        TWDR = byte;
+        return twi(0);
+    }
+
+  Put the byte in the data register, then run one step. The hardware
+  clocks out the 8 bits, reads the target's ACK/NACK, and the status
+  code says which it got.
+
+--- twi_stop() : end the conversation -----------------------------
+
+    static void twi_stop(void)
+    {
+        TWCR = (1 << TWINT) | (1 << TWSTO) | (1 << TWEN);
+        while (TWCR & (1 << TWSTO));
+    }
+
+  Ask for a STOP. This step is different: the hardware does NOT set
+  TWINT afterwards. Instead it clears TWSTO when the STOP has gone
+  out, so that is what we wait for. Waiting matters because starting
+  the next conversation before the STOP is finished can confuse the
+  hardware.
+
+--- Receiving a byte (inside gyro_read) ---------------------------
+
+    twi(1 << TWEA);   hi = TWDR;   /* receive, answer ACK  ("more") */
+    twi(0);           lo = TWDR;   /* receive, answer NACK ("done") */
+
+  When reading, the CONTROLLER sends the ACK/NACK. The last byte must
+  get a NACK so the MPU6050 stops sending and lets go of SDA, so the
+  controller can send the STOP.
+
+
+----------------------------------------------------------------------
+6. WRITING A REGISTER: mpu_write()
+----------------------------------------------------------------------
+
+The MPU6050 is set up through numbered "registers" (one-byte
+settings). Example: register 0x1B (GYRO_CONFIG) holds the range.
+
+To write one, send: address (write), register number, value.
+
+    static void mpu_write(uint8_t reg, uint8_t value)
+    {
+        twi(1 << TWSTA);            START
+        twi_send(MPU_ADDR << 1);    0xD0  "MPU6050, I will write"
+        twi_send(reg);              which register
+        twi_send(value);            what to put in it
+        twi_stop();                 STOP
+    }
+
+On the wire (C = controller/Uno, T = target/MPU6050):
+
+    C: START  0xD0       0x1B       0x00       STOP
+    T:             ACK        ACK        ACK
+
+The setup in main() uses it three times:
+
+    REG_PWR_MGMT_1  (0x6B) = 0x01   wake up (it starts asleep) and
+                                    use the gyro's own clock (more
+                                    stable than the default)
+    REG_CONFIG      (0x1A) = GYRO_FILTER    low-pass filter, smooths
+                                    out motor vibration
+    REG_GYRO_CONFIG (0x1B) = GYRO_RANGE << 3   the range lives in
+                                    bits 4..3 of this register,
+                                    hence the "<< 3"
+
+
+----------------------------------------------------------------------
+7. READING THE GYRO: gyro_read(), STEP BY STEP
+----------------------------------------------------------------------
+
+Reading is a two-part conversation: first WRITE which register you
+want, then switch direction and READ it. The switch is done with a
+"repeated START" (a START without a STOP before it), so no other
+controller could jump in between. (There is none here, but that is
+how the MPU6050 expects it.)
+
+    twi(1 << TWSTA);                    1. START
+    twi_send(MPU_ADDR << 1);            2. 0xD0  "I will write"
+    twi_send(REG_GYRO_XOUT_H + 2*YAW_AXIS);
+                                        3. register number
+    twi(1 << TWSTA);                    4. repeated START
+    twi_send((MPU_ADDR << 1) | 1);      5. 0xD1  "now I will read"
+    twi(1 << TWEA);  hi = TWDR;         6. receive byte 1, ACK
+    twi(0);          lo = TWDR;         7. receive byte 2, NACK
+    twi_stop();                         8. STOP
+
+On the wire:
+
+    C: START 0xD0     0x47     START 0xD1                  ACK      NACK STOP
+    T:            ACK      ACK            ACK  [high byte]   [low byte]
+
+Which register: the gyro has three axes, each two bytes, side by
+side starting at 0x43:
+
+    0x43 0x44   X axis (high, low)      YAW_AXIS = 0
+    0x45 0x46   Y axis                  YAW_AXIS = 1
+    0x47 0x48   Z axis                  YAW_AXIS = 2  (module flat)
+
+    so REG_GYRO_XOUT_H + 2 * YAW_AXIS = 0x43 + 4 = 0x47
+
+We only send the FIRST register number. The MPU6050 moves to the
+next register by itself after each byte it sends ("auto-increment"),
+so the second byte is 0x48 automatically.
+
+Putting the two bytes together:
+
+    return (int16_t)(((uint16_t)hi << 8) | lo);
+
+The reading is a signed 16-bit number, high byte first. Shifting
+"hi" 8 places left and OR-ing in "lo" rebuilds it:
+
+    hi = 0xFF, lo = 0x7D  ->  0xFF7D  ->  as int16_t = -131
+    -131 / 131 = -1 deg/s  (turning slowly right)
+
+(The "(uint16_t)" is there because shifting a byte >= 0x80 left by
+8 overflows a signed 16-bit int on AVR, which C does not allow.)
+
+
+----------------------------------------------------------------------
+8. STATUS CODES
+----------------------------------------------------------------------
+
+After each step, TWSR & 0xF8 says what happened. The ones you can
+see with this code:
+
+    0x08  START sent
+    0x10  repeated START sent
+    0x18  address+WRITE sent, target answered ACK   (it's there)
+    0x20  address+WRITE sent, NACK                  (nobody there)
+    0x28  data byte sent, ACK
+    0x30  data byte sent, NACK
+    0x40  address+READ sent, ACK
+    0x48  address+READ sent, NACK
+    0x50  byte received, we answered ACK
+    0x58  byte received, we answered NACK
+
+The full list is in the ATmega328P datasheet, chapter "2-wire Serial
+Interface", "Status Codes for Master Transmitter/Receiver Mode".
+
+To keep the test short, the code only checks ONE status (next
+section). After that it assumes everything works. If something does
+go wrong mid-read, you get one wrong number on the screen, or a
+freeze (section 11).
+
+
+----------------------------------------------------------------------
+9. THE "IS THE MODULE THERE?" CHECK
+----------------------------------------------------------------------
+
+    twi(1 << TWSTA);
+    i = twi_send(MPU_ADDR << 1);
+    twi_stop();
+    if (i != 0x18) -> print "MPU6050 not found" and stop
+
+Send a START and the address, then look at the answer:
+
+    0x18 = a chip at 0x68 pulled SDA low for the ACK -> it is there
+    0x20 = nobody pulled SDA low (pull-up kept it high) -> NACK
+
+Common reasons for "not found": VCC/GND missing, SDA and SCL
+swapped, AD0 tied high (then the address is 0x69: change MPU_ADDR),
+or a broken jumper wire.
+
+
+----------------------------------------------------------------------
+10. TIMING
+----------------------------------------------------------------------
+
+At 100 kHz one clock pulse is 10 microseconds. One gyro read is:
+
+    5 bytes x 9 clocks = 45 clocks, + START, repeated START, STOP
+    ~ 48 clocks x 10 us  ~ 0.5 ms
+
+The program reads every 5 ms (SAMPLE_MS), so I2C uses about 10% of
+the time. Printing a line on the serial port takes ~2 ms, so the
+worst loop is ~2.5 ms, which still fits in 5 ms. That matters: the
+heading is "rate x 5 ms" added up every loop, so a loop that took
+longer than 5 ms would lose turning and the heading would read low.
+
+The MPU6050 also supports 400 kHz (I2C_HZ 400000UL -> TWBR = 12).
+That makes a read ~0.13 ms, but it is more sensitive to long wires
+and the weak 3.3 V pull-ups, so 100 kHz is the safe choice.
+
+
+----------------------------------------------------------------------
+11. WHAT THE CODE DOES NOT PROTECT AGAINST
+----------------------------------------------------------------------
+
+Both waits in twi() and twi_stop() wait forever. They only hang if
+the bus itself stops working:
+
+  * The module is unplugged or loses power WHILE running.
+  * "Stuck bus": the Uno resets in the middle of a read (opening the
+    Serial Monitor resets it). The MPU6050 may be halfway through
+    sending a byte and keep holding SDA low, waiting for clock
+    pulses that never come. Every new START then waits forever.
+
+Symptom: no new lines on the Serial Monitor (the D7 LED keeps
+blinking, because it runs from a timer interrupt).
+Fix for the test: unplug the power and plug it back in.
+
+The final dragster program should not freeze mid-run, so it should
+add two things that were left out of this test to keep it short:
+
+  1. A timeout in the wait loops: count while waiting, give up after
+     a few milliseconds and report an error.
+  2. Bus recovery at start-up: before enabling the TWI, pulse SCL up
+     to 9 times by hand until the MPU6050 lets go of SDA.
+
+
+----------------------------------------------------------------------
+12. REUSING IT: READING MORE REGISTERS
+----------------------------------------------------------------------
+
+To read N bytes in a row: ACK every byte except the last, NACK the
+last. Example, read all three gyro axes at once (6 bytes from 0x43):
+
+    uint8_t b[6], n;
+
+    twi(1 << TWSTA);
+    twi_send(MPU_ADDR << 1);
+    twi_send(REG_GYRO_XOUT_H);
+    twi(1 << TWSTA);
+    twi_send((MPU_ADDR << 1) | 1);
+    for (n = 0; n < 6; n++)
+    {
+        twi(n < 5 ? (1 << TWEA) : 0);   /* ACK, ..., ACK, NACK */
+        b[n] = TWDR;
+    }
+    twi_stop();
+
+    x = (int16_t)(((uint16_t)b[0] << 8) | b[1]);
+    y = (int16_t)(((uint16_t)b[2] << 8) | b[3]);
+    z = (int16_t)(((uint16_t)b[4] << 8) | b[5]);
+
+Reading one register (e.g. WHO_AM_I, 0x75, which should return
+0x68): same pattern with a single byte, received with twi(0) (NACK).
+
+The same four functions work for any other I2C chip. Only the
+address and the register numbers change (from that chip's
+datasheet).
