@@ -1,0 +1,97 @@
+
+==============================
+ TACHYON MOTOR + ENCODER TEST
+==============================
+Lift the wheels off the ground, then press the button.
+While a motor runs, press the button to STOP.
+
+==============================
+ ENCODER NOISE (motors off)
+==============================
+Do not touch the wheels for 2 s.
+  M1 edges: 0   M2 edges: 0
+[PASS] M1 encoder silent with motors off
+[PASS] M2 encoder silent with motors off
+
+==============================
+ MOTOR 1 (OUT1/OUT2, ENA IN1 IN2)
+==============================
+M1 wheel should spin FORWARD now.
+[FAIL] encoder counts when the motor is driven
+  No pulses: check motor power (L298N +12V and +5V logic,
+  ENA/ENB jumpers removed, common GND) and encoder VCC/GND/A.
+  Skipping the rest of this motor.
+
+==============================
+ MOTOR 2 (OUT3/OUT4, ENB IN3 IN4)
+==============================
+M2 wheel should spin FORWARD now.
+[PASS] encoder counts when the motor is driven
+  PWM 64:  33.00 cnt/s  motor 180.00 rpm
+  PWM 128: 384.00 cnt/s  motor 2094.55 rpm
+  PWM 192: 698.00 cnt/s  motor 3807.27 rpm
+  PWM 255: 1134.00 cnt/s  motor 6185.45 rpm
+[PASS] motor turns at 50% PWM
+[PASS] speed never drops as PWM rises
+[PASS] 100% clearly faster than 50%
+  Rough gear ratio estimate: 1:16.31 (assumes 379.17 wheel rpm at this voltage;
+  measure it in live mode or read it off the label)
+  100 ms windows: min 1130.00  max 1140.00 cnt/s
+[PASS] steady speed at 100% (spread < 15%)
+  channel B: pos -2288 over 2288 A edges
+[FAIL] channel B: quadrature says FORWARD
+  -> B works but is inverted: set ENC2_B_INVERT 1
+  rises 5313  falls 5313  glitches 0
+[PASS] rises and falls match (clean signal)
+[PASS] no glitches (PWM / brush noise on encoder wire)
+  other encoder edges meanwhile: 0
+[PASS] other encoder stays still (not swapped / crossed)
+  coast to stop: 589 ms, 282 counts = 0.30 m (est.)
+  (wheels in the air: the real car coasts much further;
+  this compares gearbox drag between the two motors)
+[PASS] wheel coasts to a stop within 3 s
+  wheel starts turning at PWM 105
+[PASS] wheel starts below full power
+
+==============================
+ BOTH MOTORS 100%
+==============================
+  Skipped: a motor failed its own test.
+
+==============================
+ SUMMARY
+==============================
+Lowest PWM that turns the wheel: M1 0, M2 105 (0 = not measured; no load,
+heading correction should never drop a motor below this)
+Coast-down counts: M1 0, M2 282 (a big difference = one gearbox drags more)
+
+RESULT: 12 passed, 2 failed
+
+==============================
+ LIVE ENCODERS
+==============================
+Mark a wheel, turn it EXACTLY 10 turns by hand,
+then press the button. Expected per wheel turn: 11 x
+gear ratio counts.
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+M1 0 (pos 0)   M2 0 (pos 0)
+
+==============================
+ TACHYON MOTOR + ENCODER TEST
+==============================
+Lift the wheels off the ground, then press the button.
+While a motor runs, press the button to STOP.
